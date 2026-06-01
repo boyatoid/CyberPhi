@@ -9,3 +9,5 @@ jsonlines>=4.0.0
 tqdm>=4.66.0
 python-dotenv>=1.0.0
 uuid>=1.30
+rouge-score>=0.1.2
+chromadb>=0.5.0

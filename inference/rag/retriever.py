@@ -19,36 +19,17 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# from inference.rag.vector_store import SecurityVectorStore
+from inference.rag.vector_store import SecurityVectorStore
 
 TOP_K           = 5
 MAX_CONTEXT_LEN = 2000   # characters — trim to fit in prompt window
 
 
 class Retriever:
-    """
-    Wraps SecurityVectorStore to produce a formatted context string.
-
-    TODO:
-        1. Instantiate SecurityVectorStore in __init__
-        2. In retrieve(query, top_k):
-           a. Call store.query(query, top_k)
-           b. Format each chunk as:
-              "[Source: {source}] {chunk_text}"
-           c. Join with "\\n\\n---\\n\\n"
-           d. Truncate to MAX_CONTEXT_LEN
-           e. Return formatted string
-        3. Handle empty results gracefully (return "")
-
-    Example (once implemented):
-        retriever = Retriever()
-        ctx = retriever.retrieve("heap overflow exploitation")
-        # ctx = "[Source: nvd] CVE-2023-1234: A heap-based buffer overflow in..."
-    """
+    """Wraps SecurityVectorStore to produce a formatted context string."""
 
     def __init__(self):
-        # TODO: self.store = SecurityVectorStore()
-        raise NotImplementedError("Wire up SecurityVectorStore — see TODOs")
+        self.store = SecurityVectorStore()
 
     def retrieve(self, query: str, top_k: int = TOP_K) -> str:
         """
@@ -61,4 +42,18 @@ class Retriever:
         Returns:
             Formatted context string, or "" if no results.
         """
-        raise NotImplementedError
+        try:
+            results = self.store.query(query, top_k)
+        except Exception as exc:
+            logger.warning("Vector store query failed: %s", exc)
+            return ""
+
+        if not results:
+            return ""
+
+        parts = [
+            f"[Source: {r['metadata'].get('source', 'unknown')}] {r['text']}"
+            for r in results
+        ]
+        context = "\n\n---\n\n".join(parts)
+        return context[:MAX_CONTEXT_LEN]

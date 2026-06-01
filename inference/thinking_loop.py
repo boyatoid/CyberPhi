@@ -33,9 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 logger = logging.getLogger(__name__)
 
-# Import deferred until implementation is complete to avoid crashing on missing deps
-# from inference.ollama_client import OllamaClient
-# from inference.rag.retriever import Retriever
+from inference.ollama_client import OllamaClient
 
 
 THINK_SYSTEM = (
@@ -66,27 +64,37 @@ def thinking_loop(query: str, use_rag: bool = False) -> str:
 
     Returns:
         final answer string
-
-    TODO:
-        1. Instantiate OllamaClient and Retriever
-        2. If use_rag: context = retriever.retrieve(query)
-           Prepend context to the query string
-        3. Step 1: call client.generate(prompt=query, system=THINK_SYSTEM)
-           → think_output (should contain <think>…</think>)
-        4. Step 2: call client.generate(
-               prompt=f"Initial analysis:\n{think_output}\n\nReflect on any errors.",
-               system=REFLECT_SYSTEM)
-           → reflection
-        5. Step 3: call client.generate(
-               prompt=f"Query: {query}\n\nReasoning:\n{think_output}\n\nReflection:\n{reflection}",
-               system=ANSWER_SYSTEM)
-           → final_answer
-        6. Return final_answer
     """
-    raise NotImplementedError(
-        "thinking_loop requires a trained GGUF model loaded in Ollama. "
-        "See inference/README.md for setup."
+    client = OllamaClient()
+
+    augmented_query = query
+    if use_rag:
+        from inference.rag.retriever import Retriever  # noqa: PLC0415 — lazy: pulls in chromadb
+        retriever = Retriever()
+        context = retriever.retrieve(query)
+        if context:
+            augmented_query = f"Context:\n{context}\n\nQuestion: {query}"
+
+    logger.debug("Step 1: THINK")
+    think_output = client.generate(prompt=augmented_query, system=THINK_SYSTEM)
+
+    logger.debug("Step 2: REFLECT")
+    reflection = client.generate(
+        prompt=f"Initial analysis:\n{think_output}\n\nReflect on any errors.",
+        system=REFLECT_SYSTEM,
     )
+
+    logger.debug("Step 3: ANSWER")
+    final_answer = client.generate(
+        prompt=(
+            f"Query: {query}\n\n"
+            f"Reasoning:\n{think_output}\n\n"
+            f"Reflection:\n{reflection}"
+        ),
+        system=ANSWER_SYSTEM,
+    )
+
+    return final_answer
 
 
 def main() -> None:

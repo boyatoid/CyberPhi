@@ -28,16 +28,41 @@ logger = logging.getLogger(__name__)
 # Metric stubs — implement after the model is available
 # ---------------------------------------------------------------------------
 
+def _lcs_len(x: list, y: list) -> int:
+    """Length of the longest common subsequence of two token lists."""
+    m, n = len(x), len(y)
+    prev = [0] * (n + 1)
+    for i in range(1, m + 1):
+        curr = [0] * (n + 1)
+        for j in range(1, n + 1):
+            curr[j] = prev[j - 1] + 1 if x[i - 1] == y[j - 1] else max(prev[j], curr[j - 1])
+        prev = curr
+    return prev[n]
+
+
 def rouge_l_score(hypothesis: str, reference: str) -> float:
     """
     Compute ROUGE-L F1 between hypothesis and reference.
-
-    TODO: implement LCS-based ROUGE-L or use the `rouge-score` package:
-        from rouge_score import rouge_scorer
-        scorer = rouge_scorer.RougeScorer(['rougeL'])
-        return scorer.score(reference, hypothesis)['rougeL'].fmeasure
+    Uses rouge_score package when available; falls back to a native LCS implementation
+    (the package's NLTK dependency has a broken sqlite3 on some macOS/conda environments).
     """
-    raise NotImplementedError
+    try:
+        from rouge_score import rouge_scorer  # noqa: PLC0415
+        scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
+        return scorer.score(reference, hypothesis)["rougeL"].fmeasure
+    except Exception:
+        pass
+
+    h_tokens = hypothesis.lower().split()
+    r_tokens  = reference.lower().split()
+    if not h_tokens or not r_tokens:
+        return 0.0
+    lcs       = _lcs_len(h_tokens, r_tokens)
+    precision = lcs / len(h_tokens)
+    recall    = lcs / len(r_tokens)
+    if precision + recall == 0.0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
 
 
 def exact_match(hypothesis: str, reference: str) -> bool:
@@ -45,13 +70,24 @@ def exact_match(hypothesis: str, reference: str) -> bool:
     return hypothesis.strip().lower() == reference.strip().lower()
 
 
-def flag_extraction_accuracy(outputs: list[str], expected_flags: list[str]) -> float:
-    """
-    Fraction of outputs that contain the expected CTF flag.
+_FLAG_RE = re.compile(r"(?:flag|ctf|htb|picoctf|pico)\{[^}]+\}", re.IGNORECASE)
 
-    TODO: handle common CTF flag patterns: flag{...}, CTF{...}, etc.
-    """
-    raise NotImplementedError
+
+def flag_extraction_accuracy(outputs: list[str], expected_flags: list[str]) -> float:
+    """Fraction of outputs that contain the expected CTF flag."""
+    correct = 0
+    for out, expected in zip(outputs, expected_flags):
+        if not expected:
+            continue
+        if expected.lower() in out.lower():
+            correct += 1
+            continue
+        # Also accept if any extracted flag token matches
+        for match in _FLAG_RE.findall(out):
+            if match.lower() == expected.lower():
+                correct += 1
+                break
+    return correct / max(len(outputs), 1)
 
 
 def vuln_class_accuracy(outputs: list[str], expected_classes: list[str]) -> float:
@@ -106,12 +142,20 @@ def print_report(results_file: Path) -> None:
     expected = [r.get("expected", "") for r in results]
     classes  = [r.get("vuln_type", "") for r in results]
 
+    flags = [r.get("expected_flag", "") for r in results]
+    mean_rouge = (
+        sum(rouge_l_score(o, e) for o, e in zip(outputs, expected) if e) /
+        max(sum(1 for e in expected if e), 1)
+    )
+
     print("\n=== CyberPhi Evaluation Report ===")
     print(f"Total samples:         {len(results)}")
     print(f"<think> block rate:    {think_block_presence_rate(outputs):.1%}")
     print(f"Vuln-class accuracy:   {vuln_class_accuracy(outputs, classes):.1%}")
+    print(f"Mean ROUGE-L:          {mean_rouge:.3f}")
+    if any(flags):
+        print(f"Flag extraction acc:   {flag_extraction_accuracy(outputs, flags):.1%}")
     print(f"CoT step distribution: {cot_step_count_distribution(outputs)}")
-    print("ROUGE-L and flag accuracy: TODO — requires full implementation")
 
 
 # ---------------------------------------------------------------------------

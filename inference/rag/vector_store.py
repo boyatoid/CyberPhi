@@ -15,18 +15,19 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import sys
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# ChromaDB dependency — install: pip install chromadb
-# from chromadb import PersistentClient
-# from chromadb.config import Settings
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from inference.ollama_client import OllamaClient
 
-# Ollama client for embeddings
-# from inference.ollama_client import OllamaClient
+# chromadb is imported lazily inside __init__ — it requires sqlite3 which is broken
+# on some macOS/conda environments. Deferring avoids breaking module-level imports.
 
 CHROMA_PERSIST_DIR = Path("./chroma_db")
 COLLECTION_NAME    = "cyberphi_security_docs"
@@ -42,38 +43,61 @@ class SecurityVectorStore:
       - add_documents(texts, metadatas): chunk, embed, and upsert
       - query(text, n_results):         embed query and return top-k chunks
       - delete_collection():            wipe and start fresh
-
-    TODO:
-        1. Initialize PersistentClient with CHROMA_PERSIST_DIR
-        2. Get or create collection COLLECTION_NAME with cosine distance
-        3. In add_documents: chunk text with overlap, embed each chunk via
-           OllamaClient.embed(), upsert into the collection
-        4. In query: embed the query, call collection.query(), return
-           (documents, metadatas, distances) tuples
-
-    Example (once implemented):
-        store = SecurityVectorStore()
-        store.add_documents(
-            texts=["CVE-2023-44487 is an HTTP/2 Rapid Reset vulnerability…"],
-            metadatas=[{"cve_id": "CVE-2023-44487", "severity": "high"}]
-        )
-        results = store.query("rapid reset attack", n_results=5)
     """
 
     def __init__(self, persist_dir: Path = CHROMA_PERSIST_DIR):
-        self.persist_dir = persist_dir
-        # TODO: self.client     = PersistentClient(path=str(persist_dir))
-        # TODO: self.collection = self.client.get_or_create_collection(
-        #           COLLECTION_NAME, metadata={"hnsw:space": "cosine"})
-        raise NotImplementedError("Wire up ChromaDB — see TODOs in this class")
+        import chromadb  # noqa: PLC0415 — deferred to avoid breaking module imports on some envs
+        self.persist_dir  = persist_dir
+        self._ollama      = OllamaClient()
+        self.client       = chromadb.PersistentClient(path=str(persist_dir))
+        self.collection   = self.client.get_or_create_collection(
+            COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+        )
 
     def add_documents(self, texts: list[str], metadatas: list[dict]) -> None:
         """Chunk, embed, and upsert documents into the collection."""
-        raise NotImplementedError
+        ids        = []
+        embeddings = []
+        docs       = []
+        metas      = []
+
+        for text, meta in zip(texts, metadatas):
+            for chunk in self._chunk(text):
+                chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, chunk))
+                embedding = self._ollama.embed(chunk)
+                ids.append(chunk_id)
+                embeddings.append(embedding)
+                docs.append(chunk)
+                metas.append(meta)
+
+        if ids:
+            self.collection.upsert(ids=ids, embeddings=embeddings, documents=docs, metadatas=metas)
+            logger.info("Upserted %d chunks into '%s'", len(ids), COLLECTION_NAME)
 
     def query(self, text: str, n_results: int = 5) -> list[dict]:
         """Return the top-n most similar chunks with their metadata."""
-        raise NotImplementedError
+        embedding = self._ollama.embed(text)
+        results   = self.collection.query(
+            query_embeddings=[embedding],
+            n_results=n_results,
+            include=["documents", "metadatas", "distances"],
+        )
+        output = []
+        for doc, meta, dist in zip(
+            results["documents"][0],
+            results["metadatas"][0],
+            results["distances"][0],
+        ):
+            output.append({"text": doc, "metadata": meta, "distance": dist})
+        return output
+
+    def delete_collection(self) -> None:
+        """Wipe the collection and start fresh."""
+        self.client.delete_collection(COLLECTION_NAME)
+        self.collection = self.client.get_or_create_collection(
+            COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+        )
+        logger.info("Collection '%s' reset.", COLLECTION_NAME)
 
     @staticmethod
     def _chunk(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
@@ -83,6 +107,8 @@ class SecurityVectorStore:
         while start < len(text):
             end = start + size
             chunks.append(text[start:end])
+            if end >= len(text):
+                break
             start = end - overlap
         return chunks
 
@@ -99,13 +125,36 @@ def main() -> None:
     logging.basicConfig(level="INFO", format="%(asctime)s %(levelname)s %(message)s")
 
     store = SecurityVectorStore()
+
     if args.index:
-        logger.info("Indexing %s …", args.index)
-        # TODO: load file, extract text fields, call store.add_documents()
+        index_path = Path(args.index)
+        logger.info("Indexing %s …", index_path)
+        texts     = []
+        metadatas = []
+
+        if index_path.suffix == ".jsonl":
+            with open(index_path) as f:
+                for line in f:
+                    entry = json.loads(line)
+                    text = entry.get("description") or entry.get("input") or entry.get("output", "")
+                    if text:
+                        texts.append(text)
+                        metadatas.append({
+                            "source":    entry.get("source", "unknown"),
+                            "vuln_type": entry.get("vuln_type", "unknown"),
+                            "id":        entry.get("id", ""),
+                        })
+        else:
+            text = index_path.read_text()
+            texts.append(text)
+            metadatas.append({"source": index_path.name})
+
+        store.add_documents(texts, metadatas)
+
     if args.query:
         results = store.query(args.query, args.top_k)
         for r in results:
-            print(r)
+            print(f"[dist={r['distance']:.3f}] [{r['metadata'].get('source', '')}] {r['text'][:200]}")
 
 
 if __name__ == "__main__":
