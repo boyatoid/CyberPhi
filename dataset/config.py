@@ -87,7 +87,7 @@ H1_SCRAPE_DELAY = 2.0  # seconds between requests
 # ---------------------------------------------------------------------------
 # Claude / Anthropic
 # ---------------------------------------------------------------------------
-CLAUDE_MODEL      = "claude-opus-4-5"
+CLAUDE_MODEL      = "claude-opus-4-8"
 CLAUDE_BATCH_SIZE = 10
 CLAUDE_MAX_TOKENS = 4096
 

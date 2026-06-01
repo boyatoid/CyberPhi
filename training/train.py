@@ -63,7 +63,8 @@ from pathlib import Path
 from typing import Optional
 
 CONFIG_YAML = Path(__file__).parent / "axolotl_config.yaml"
-OUTPUT_DIR  = Path("outputs/cyberphi-lora")
+# Respect OUTPUT_DIR env var so quickstart.sh can set per-run output directories
+OUTPUT_DIR  = Path(os.environ.get("OUTPUT_DIR", "outputs/cyberphi-lora"))
 
 
 def run_training() -> None:
