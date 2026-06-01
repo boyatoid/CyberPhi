@@ -1,0 +1,25 @@
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+cyberphi-env/
+dist/
+build/
+
+# Data directories (can be large)
+data/raw/
+data/enriched/
+data/cleaned/
+data/final/
+
+# Logs
+logs/
+
+# Model artifacts
+*.gguf
+*.bin
+*.safetensors
+outputs/
+prepared_data/

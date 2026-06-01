@@ -1,0 +1,119 @@
+# Axolotl QLoRA config for Phi-3.5-mini-instruct
+# Docs: https://github.com/axolotl-ai-cloud/axolotl/blob/main/docs/config.qmd
+#
+# Run: axolotl train training/axolotl_config.yaml
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+base_model: microsoft/Phi-3.5-mini-instruct
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+# trust_remote_code is required for Phi-3.5 custom architecture
+trust_remote_code: true
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
+datasets:
+  - path: data/final/validated.jsonl  # or a HuggingFace repo path
+    type: alpaca                       # instruction/input/output format
+    # If hosted on HuggingFace Hub:
+    # path: your-username/cyberphi-dataset
+    # type: alpaca
+
+dataset_prepared_path: ./prepared_data  # tokenized cache (delete to re-tokenize)
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+output_dir: ./outputs/cyberphi-lora
+
+# ---------------------------------------------------------------------------
+# QLoRA / PEFT
+# ---------------------------------------------------------------------------
+adapter: qlora
+lora_r: 16                # rank — higher = more parameters, slower
+lora_alpha: 32            # scaling factor; conventionally 2× rank
+lora_dropout: 0.05
+lora_target_linear: true  # target all linear layers automatically
+lora_on_cpu: false
+
+# ---------------------------------------------------------------------------
+# 4-bit quantization (bitsandbytes)
+# ---------------------------------------------------------------------------
+load_in_4bit: true
+bnb_4bit_compute_dtype: bfloat16
+bnb_4bit_quant_type: nf4             # NF4 is better than FP4 for LLMs
+bnb_4bit_use_double_quant: true      # nested quantization saves ~0.4 GB
+
+# ---------------------------------------------------------------------------
+# Sequence & batching
+# ---------------------------------------------------------------------------
+sequence_len: 4096          # max context length for Phi-3.5-mini
+sample_packing: true        # pack multiple short examples into one sequence
+
+micro_batch_size: 2         # per-GPU batch; lower if OOM
+gradient_accumulation_steps: 4  # effective batch = 2 × 4 = 8
+
+# ---------------------------------------------------------------------------
+# Optimiser & LR schedule
+# ---------------------------------------------------------------------------
+optimizer: paged_adamw_32bit
+learning_rate: 0.0001       # 1e-4 — good starting point for LoRA
+lr_scheduler: cosine
+warmup_steps: 10
+weight_decay: 0.0
+
+# ---------------------------------------------------------------------------
+# Training duration
+# ---------------------------------------------------------------------------
+num_epochs: 3
+max_steps:               # leave empty to use num_epochs
+
+# ---------------------------------------------------------------------------
+# Evaluation & checkpointing
+# ---------------------------------------------------------------------------
+val_set_size: 0.02         # 2% held-out validation split
+eval_steps: 200
+save_steps: 200
+save_total_limit: 3        # keep only the 3 most recent checkpoints
+eval_table_size: 5         # number of eval examples to log in W&B / stdout
+max_grad_norm: 1.0
+
+# ---------------------------------------------------------------------------
+# Chat template
+# ---------------------------------------------------------------------------
+# Phi-3.5-mini uses ChatML: <|im_start|>role\ncontent<|im_end|>
+chat_template: chatml
+default_system_message: "You are a senior cybersecurity expert and penetration tester."
+
+# ---------------------------------------------------------------------------
+# Precision
+# ---------------------------------------------------------------------------
+bf16: auto               # use BF16 on Ampere+; falls back to FP16
+fp16: false
+tf32: false
+
+# ---------------------------------------------------------------------------
+# Memory optimisations
+# ---------------------------------------------------------------------------
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false    # required for newer PyTorch versions
+
+flash_attention: true     # requires flash-attn package; set false if unavailable
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging_steps: 10
+use_wandb: false          # set true and export WANDB_API_KEY to enable
+# wandb_project: cyberphi
+# wandb_run_id:
+
+# ---------------------------------------------------------------------------
+# Hub upload (optional)
+# ---------------------------------------------------------------------------
+# hub_model_id: your-username/cyberphi-lora
+# hub_strategy: checkpoint
