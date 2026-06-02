@@ -75,15 +75,15 @@ HEADERS = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_existing_ids() -> set:
+def _load_existing_ids() -> tuple[set, int]:
     if not OUTPUT_FILE.exists():
-        return set()
+        return set(), 0
     ids: set = set()
     with jsonlines.open(OUTPUT_FILE) as r:
         for entry in r:
             ids.add(str(entry.get("report_id", "")))
     logger.info("Loaded %d existing report IDs (resume mode)", len(ids))
-    return ids
+    return ids, len(ids)
 
 
 def _fetch_page(session: requests.Session, cursor: str | None, page_size: int = 25) -> dict:
@@ -162,10 +162,18 @@ def scrape(limit: int | None = None) -> None:
     Args:
         limit: stop after this many saved entries (None = unlimited)
     """
-    existing_ids = _load_existing_ids()
-    session      = requests.Session()
-    cursor       = None
-    total_saved  = 0
+    existing_ids, existing_count = _load_existing_ids()
+
+    if limit and existing_count >= limit:
+        logger.info("Skipping HackerOne — already have %d/%d entries", existing_count, limit)
+        return
+
+    remaining   = (limit - existing_count) if limit else None
+    logger.info("HackerOne: have %d, need %d more", existing_count, remaining or 0)
+
+    session     = requests.Session()
+    cursor      = None
+    total_saved = 0
 
     with tqdm(desc="HackerOne reports", unit="report") as pbar:
         while True:
@@ -206,8 +214,9 @@ def scrape(limit: int | None = None) -> None:
                 total_saved += 1
                 pbar.update(1)
 
-                if limit and total_saved >= limit:
-                    logger.info("Reached limit=%d", limit)
+                if remaining and total_saved >= remaining:
+                    logger.info("Reached target: %d new + %d existing = %d/%d",
+                                total_saved, existing_count, total_saved + existing_count, limit)
                     return
 
             if not page_info.get("hasNextPage"):

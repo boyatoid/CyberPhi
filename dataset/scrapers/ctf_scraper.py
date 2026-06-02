@@ -213,10 +213,18 @@ def scrape(limit: int | None = None, years: list[int] | None = None) -> None:
         limit: maximum entries to save (None = unlimited)
         years: unused (kept for CLI compatibility; CTFtime listing is global)
     """
-    existing_urls = _load_existing_urls()
-    session       = requests.Session()
-    total_saved   = 0
-    page          = 1
+    existing_urls, existing_count = _load_existing_urls()
+
+    if limit and existing_count >= limit:
+        logger.info("Skipping CTF — already have %d/%d entries", existing_count, limit)
+        return
+
+    remaining   = (limit - existing_count) if limit else None
+    logger.info("CTF writeups: have %d, need %d more", existing_count, remaining or 0)
+
+    session     = requests.Session()
+    total_saved = 0
+    page        = 1
 
     with tqdm(desc="CTF writeups", unit="writeup") as pbar:
         while True:
@@ -262,8 +270,9 @@ def scrape(limit: int | None = None, years: list[int] | None = None) -> None:
                 total_saved += 1
                 pbar.update(1)
 
-                if limit and total_saved >= limit:
-                    logger.info("Reached limit=%d", limit)
+                if remaining and total_saved >= remaining:
+                    logger.info("Reached target: %d new + %d existing = %d/%d",
+                                total_saved, existing_count, total_saved + existing_count, limit)
                     return
 
             page += 1
@@ -271,15 +280,15 @@ def scrape(limit: int | None = None, years: list[int] | None = None) -> None:
     logger.info("Done. Saved %d writeups → %s", total_saved, OUTPUT_FILE)
 
 
-def _load_existing_urls() -> set:
+def _load_existing_urls() -> tuple[set, int]:
     if not OUTPUT_FILE.exists():
-        return set()
+        return set(), 0
     urls: set = set()
     with jsonlines.open(OUTPUT_FILE) as r:
         for entry in r:
             urls.add(entry.get("url", ""))
     logger.info("Loaded %d existing URLs (resume mode)", len(urls))
-    return urls
+    return urls, len(urls)
 
 
 def _infer_category(url: str, content: str) -> str:
