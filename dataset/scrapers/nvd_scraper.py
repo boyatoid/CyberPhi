@@ -82,14 +82,13 @@ def _fetch_page(session: requests.Session, start_index: int, severity: str) -> d
         "startIndex":     start_index,
         "cvssV3Severity": severity,
     }
-    if NVD_API_KEY:
-        params["apiKey"] = NVD_API_KEY
-
     headers: dict = {
         "User-Agent":      "CyberPhi/1.0 (security dataset builder)",
         "Accept-Encoding": "identity",
         "Accept":          "application/json",
     }
+    if NVD_API_KEY:
+        headers["apiKey"] = NVD_API_KEY   # v2.0 API: key goes in header, not query string
 
     for attempt in range(8):
         try:
