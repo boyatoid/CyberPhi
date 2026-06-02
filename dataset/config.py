@@ -87,13 +87,28 @@ H1_SCRAPE_DELAY = 2.0  # seconds between requests
 # ---------------------------------------------------------------------------
 # Claude / Anthropic
 # ---------------------------------------------------------------------------
-CLAUDE_MODEL      = "claude-opus-4-8"
+# Model routing — cheapest model that meets the quality bar for each task
+CLAUDE_MODEL_COT     = "claude-sonnet-4-6"           # CoT enrichment
+CLAUDE_MODEL_VARIANT = "claude-sonnet-4-6"           # Variant generation
+CLAUDE_MODEL_QA      = "claude-haiku-4-5-20251001"   # Q&A pairs (structured, simpler)
+CLAUDE_MODEL_NVD     = "claude-haiku-4-5-20251001"   # Bulk NVD CVE processing
+
+CLAUDE_MODEL      = "claude-sonnet-4-6"   # generic fallback
 CLAUDE_BATCH_SIZE = 10
 CLAUDE_MAX_TOKENS = 4096
 
-# Approximate $/M-token for cost logging (update as pricing changes)
-CLAUDE_INPUT_COST_PER_MTOK  = 15.0
-CLAUDE_OUTPUT_COST_PER_MTOK = 75.0
+# Pricing per million tokens — update if Anthropic changes rates
+# Sonnet 4.6
+SONNET_INPUT_COST_PER_MTOK        =  3.00
+SONNET_OUTPUT_COST_PER_MTOK       = 15.00
+SONNET_CACHE_WRITE_COST_PER_MTOK  =  3.75   # 125% of input (cache creation)
+SONNET_CACHE_READ_COST_PER_MTOK   =  0.30   # 10%  of input (cache hit)
+
+# Haiku 4.5
+HAIKU_INPUT_COST_PER_MTOK         =  0.80
+HAIKU_OUTPUT_COST_PER_MTOK        =  4.00
+HAIKU_CACHE_WRITE_COST_PER_MTOK   =  1.00   # 125% of input
+HAIKU_CACHE_READ_COST_PER_MTOK    =  0.08   # 10%  of input
 
 # ---------------------------------------------------------------------------
 # General instruction mixing

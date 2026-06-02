@@ -39,12 +39,14 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dataset.config import (
     ANTHROPIC_API_KEY,
-    CLAUDE_INPUT_COST_PER_MTOK,
     CLAUDE_MAX_TOKENS,
-    CLAUDE_MODEL,
-    CLAUDE_OUTPUT_COST_PER_MTOK,
+    CLAUDE_MODEL_VARIANT,
     ENRICHED_DIR,
     LANGUAGES,
+    SONNET_CACHE_READ_COST_PER_MTOK,
+    SONNET_CACHE_WRITE_COST_PER_MTOK,
+    SONNET_INPUT_COST_PER_MTOK,
+    SONNET_OUTPUT_COST_PER_MTOK,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,17 +111,28 @@ def _build_variant_prompt(entry: dict, variant_type: str, target_lang: str | Non
     )
 
 
-def _call_claude(client: anthropic.Anthropic, prompt: str) -> tuple[str, int, int]:
+def _call_claude(client: anthropic.Anthropic, prompt: str) -> tuple[str, int, int, int, int]:
     for attempt in range(5):
         try:
             response = client.messages.create(
-                model=CLAUDE_MODEL,
+                model=CLAUDE_MODEL_VARIANT,
                 max_tokens=CLAUDE_MAX_TOKENS,
-                system=SYSTEM_PROMPT,
+                system=[{
+                    "type": "text",
+                    "text": SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }],
                 messages=[{"role": "user", "content": prompt}],
             )
-            text = response.content[0].text
-            return text, response.usage.input_tokens, response.usage.output_tokens
+            cache_write = getattr(response.usage, "cache_creation_input_tokens", 0)
+            cache_read  = getattr(response.usage, "cache_read_input_tokens",      0)
+            return (
+                response.content[0].text,
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+                cache_write,
+                cache_read,
+            )
         except anthropic.RateLimitError:
             wait = 2 ** attempt * 10
             logger.warning("Rate limited. Waiting %ds", wait)
@@ -184,9 +197,11 @@ def generate_variants(
     entries         = _load_enriched_entries(vuln_type)
     existing_ids    = _load_existing_parent_variant_ids()
     client          = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    total_saved     = 0
-    total_in_tok    = 0
-    total_out_tok   = 0
+    total_saved       = 0
+    total_in_tok      = 0
+    total_out_tok     = 0
+    total_cache_write = 0
+    total_cache_read  = 0
 
     logger.info("Generating up to %d variants for %d entries", n_variants, len(entries))
 
@@ -209,14 +224,16 @@ def generate_variants(
                 prompt = _build_variant_prompt(entry, vtype, target_lang, target_fw)
 
                 try:
-                    output_text, in_t, out_t = _call_claude(client, prompt)
+                    output_text, in_t, out_t, cw_t, cr_t = _call_claude(client, prompt)
                 except Exception as exc:
                     logger.warning("Skipping %s: %s", variant_id, exc)
                     pbar.update(1)
                     continue
 
-                total_in_tok  += in_t
-                total_out_tok += out_t
+                total_in_tok      += in_t
+                total_out_tok     += out_t
+                total_cache_write += cw_t
+                total_cache_read  += cr_t
 
                 variant_entry = {
                     "entry_id":       variant_id,
@@ -240,15 +257,30 @@ def generate_variants(
 
                 if limit and total_saved >= limit:
                     logger.info("Reached limit=%d", limit)
-                    cost = (total_in_tok / 1e6 * CLAUDE_INPUT_COST_PER_MTOK +
-                            total_out_tok / 1e6 * CLAUDE_OUTPUT_COST_PER_MTOK)
-                    logger.info("Est. cost so far: $%.4f", cost)
+                    cost = (
+                        total_in_tok      / 1e6 * SONNET_INPUT_COST_PER_MTOK        +
+                        total_cache_write / 1e6 * SONNET_CACHE_WRITE_COST_PER_MTOK  +
+                        total_cache_read  / 1e6 * SONNET_CACHE_READ_COST_PER_MTOK   +
+                        total_out_tok     / 1e6 * SONNET_OUTPUT_COST_PER_MTOK
+                    )
+                    logger.info(
+                        "Est. cost so far: $%.4f | cache_write=%d cache_read=%d",
+                        cost, total_cache_write, total_cache_read,
+                    )
                     return
 
-    cost = (total_in_tok / 1e6 * CLAUDE_INPUT_COST_PER_MTOK +
-            total_out_tok / 1e6 * CLAUDE_OUTPUT_COST_PER_MTOK)
-    logger.info("Done. Generated %d variants → %s | est. cost $%.4f",
-                total_saved, OUTPUT_FILE, cost)
+    cost = (
+        total_in_tok      / 1e6 * SONNET_INPUT_COST_PER_MTOK        +
+        total_cache_write / 1e6 * SONNET_CACHE_WRITE_COST_PER_MTOK  +
+        total_cache_read  / 1e6 * SONNET_CACHE_READ_COST_PER_MTOK   +
+        total_out_tok     / 1e6 * SONNET_OUTPUT_COST_PER_MTOK
+    )
+    logger.info(
+        "Done. Generated %d variants → %s | tokens in=%d cache_write=%d"
+        " cache_read=%d out=%d | est. cost $%.4f",
+        total_saved, OUTPUT_FILE, total_in_tok, total_cache_write,
+        total_cache_read, total_out_tok, cost,
+    )
 
 
 # ---------------------------------------------------------------------------

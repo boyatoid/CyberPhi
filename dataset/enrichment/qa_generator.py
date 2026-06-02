@@ -35,11 +35,13 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dataset.config import (
     ANTHROPIC_API_KEY,
-    CLAUDE_INPUT_COST_PER_MTOK,
     CLAUDE_MAX_TOKENS,
-    CLAUDE_MODEL,
-    CLAUDE_OUTPUT_COST_PER_MTOK,
+    CLAUDE_MODEL_QA,
     ENRICHED_DIR,
+    HAIKU_CACHE_READ_COST_PER_MTOK,
+    HAIKU_CACHE_WRITE_COST_PER_MTOK,
+    HAIKU_INPUT_COST_PER_MTOK,
+    HAIKU_OUTPUT_COST_PER_MTOK,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,17 +87,28 @@ def _build_prompt(chunk: str) -> str:
     )
 
 
-def _call_claude(client: anthropic.Anthropic, prompt: str) -> tuple[str, int, int]:
+def _call_claude(client: anthropic.Anthropic, prompt: str) -> tuple[str, int, int, int, int]:
     for attempt in range(5):
         try:
             response = client.messages.create(
-                model=CLAUDE_MODEL,
+                model=CLAUDE_MODEL_QA,
                 max_tokens=CLAUDE_MAX_TOKENS,
-                system=SYSTEM_PROMPT,
+                system=[{
+                    "type": "text",
+                    "text": SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }],
                 messages=[{"role": "user", "content": prompt}],
             )
-            text = response.content[0].text
-            return text, response.usage.input_tokens, response.usage.output_tokens
+            cache_write = getattr(response.usage, "cache_creation_input_tokens", 0)
+            cache_read  = getattr(response.usage, "cache_read_input_tokens",      0)
+            return (
+                response.content[0].text,
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+                cache_write,
+                cache_read,
+            )
         except anthropic.RateLimitError:
             wait = 2 ** attempt * 10
             logger.warning("Rate limited. Waiting %ds", wait)
@@ -197,12 +210,14 @@ def generate_qa(input_file: str | Path, limit: int | None = None) -> None:
         logger.error("Input file not found: %s", input_path)
         return
 
-    existing_ids  = _load_existing_ids()
-    client        = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    chunks        = _iter_chunks(input_path)
-    total_saved   = 0
-    total_in_tok  = 0
-    total_out_tok = 0
+    existing_ids      = _load_existing_ids()
+    client            = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    chunks            = _iter_chunks(input_path)
+    total_saved       = 0
+    total_in_tok      = 0
+    total_out_tok     = 0
+    total_cache_write = 0
+    total_cache_read  = 0
 
     logger.info("Generating Q&A pairs from %d chunks in %s", len(chunks), input_path.name)
 
@@ -210,14 +225,16 @@ def generate_qa(input_file: str | Path, limit: int | None = None) -> None:
         for chunk_id, chunk_text in chunks:
             prompt = _build_prompt(chunk_text)
             try:
-                raw, in_t, out_t = _call_claude(client, prompt)
+                raw, in_t, out_t, cw_t, cr_t = _call_claude(client, prompt)
             except Exception as exc:
                 logger.warning("Skipping chunk %s: %s", chunk_id, exc)
                 pbar.update(1)
                 continue
 
-            total_in_tok  += in_t
-            total_out_tok += out_t
+            total_in_tok      += in_t
+            total_out_tok     += out_t
+            total_cache_write += cw_t
+            total_cache_read  += cr_t
 
             pairs = _parse_qa_response(raw, chunk_id, input_path.name)
 
@@ -230,17 +247,33 @@ def generate_qa(input_file: str | Path, limit: int | None = None) -> None:
                     total_saved += 1
                     if limit and total_saved >= limit:
                         pbar.update(1)
-                        cost = (total_in_tok / 1e6 * CLAUDE_INPUT_COST_PER_MTOK +
-                                total_out_tok / 1e6 * CLAUDE_OUTPUT_COST_PER_MTOK)
-                        logger.info("Reached limit=%d | est. cost $%.4f", limit, cost)
+                        cost = (
+                            total_in_tok      / 1e6 * HAIKU_INPUT_COST_PER_MTOK        +
+                            total_cache_write / 1e6 * HAIKU_CACHE_WRITE_COST_PER_MTOK  +
+                            total_cache_read  / 1e6 * HAIKU_CACHE_READ_COST_PER_MTOK   +
+                            total_out_tok     / 1e6 * HAIKU_OUTPUT_COST_PER_MTOK
+                        )
+                        logger.info(
+                            "Reached limit=%d | cache_write=%d cache_read=%d"
+                            " | est. cost $%.4f",
+                            limit, total_cache_write, total_cache_read, cost,
+                        )
                         return
 
             pbar.update(1)
 
-    cost = (total_in_tok / 1e6 * CLAUDE_INPUT_COST_PER_MTOK +
-            total_out_tok / 1e6 * CLAUDE_OUTPUT_COST_PER_MTOK)
-    logger.info("Done. Saved %d Q&A pairs → %s | est. cost $%.4f",
-                total_saved, OUTPUT_FILE, cost)
+    cost = (
+        total_in_tok      / 1e6 * HAIKU_INPUT_COST_PER_MTOK        +
+        total_cache_write / 1e6 * HAIKU_CACHE_WRITE_COST_PER_MTOK  +
+        total_cache_read  / 1e6 * HAIKU_CACHE_READ_COST_PER_MTOK   +
+        total_out_tok     / 1e6 * HAIKU_OUTPUT_COST_PER_MTOK
+    )
+    logger.info(
+        "Done. Saved %d Q&A pairs → %s | tokens in=%d cache_write=%d"
+        " cache_read=%d out=%d | est. cost $%.4f",
+        total_saved, OUTPUT_FILE, total_in_tok, total_cache_write,
+        total_cache_read, total_out_tok, cost,
+    )
 
 
 # ---------------------------------------------------------------------------

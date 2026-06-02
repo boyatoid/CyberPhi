@@ -39,12 +39,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dataset.config import (
     ANTHROPIC_API_KEY,
     CLAUDE_BATCH_SIZE,
-    CLAUDE_INPUT_COST_PER_MTOK,
     CLAUDE_MAX_TOKENS,
-    CLAUDE_MODEL,
-    CLAUDE_OUTPUT_COST_PER_MTOK,
+    CLAUDE_MODEL_COT,
+    CLAUDE_MODEL_NVD,
     ENRICHED_DIR,
+    HAIKU_CACHE_READ_COST_PER_MTOK,
+    HAIKU_CACHE_WRITE_COST_PER_MTOK,
+    HAIKU_INPUT_COST_PER_MTOK,
+    HAIKU_OUTPUT_COST_PER_MTOK,
     RAW_DIR,
+    SONNET_CACHE_READ_COST_PER_MTOK,
+    SONNET_CACHE_WRITE_COST_PER_MTOK,
+    SONNET_INPUT_COST_PER_MTOK,
+    SONNET_OUTPUT_COST_PER_MTOK,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,9 +141,16 @@ def _source_id(source: str, entry: dict) -> str:
 # Claude API call with retry
 # ---------------------------------------------------------------------------
 
-def _call_claude(client: anthropic.Anthropic, instruction: str, input_ctx: str) -> tuple[str, int, int]:
+def _call_claude(
+    client: anthropic.Anthropic,
+    model: str,
+    instruction: str,
+    input_ctx: str,
+) -> tuple[str, int, int, int, int]:
     """
-    Call Claude and return (output_text, input_tokens, output_tokens).
+    Call Claude and return (output_text, input_tokens, output_tokens, cache_write, cache_read).
+    The system prompt is sent with cache_control so repeated calls in the same session
+    pay the cheap cache-read rate instead of the full input rate.
     Retries up to 5 times with exponential backoff on rate-limit / server errors.
     """
     user_msg = (
@@ -153,13 +167,24 @@ def _call_claude(client: anthropic.Anthropic, instruction: str, input_ctx: str) 
     for attempt in range(5):
         try:
             response = client.messages.create(
-                model=CLAUDE_MODEL,
+                model=model,
                 max_tokens=CLAUDE_MAX_TOKENS,
-                system=SYSTEM_PROMPT,
+                system=[{
+                    "type": "text",
+                    "text": SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }],
                 messages=[{"role": "user", "content": user_msg}],
             )
-            text = response.content[0].text
-            return text, response.usage.input_tokens, response.usage.output_tokens
+            cache_write = getattr(response.usage, "cache_creation_input_tokens", 0)
+            cache_read  = getattr(response.usage, "cache_read_input_tokens",      0)
+            return (
+                response.content[0].text,
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+                cache_write,
+                cache_read,
+            )
 
         except anthropic.RateLimitError:
             wait = 2 ** attempt * 10
@@ -180,6 +205,26 @@ def _call_claude(client: anthropic.Anthropic, instruction: str, input_ctx: str) 
                 raise
 
     raise RuntimeError("Claude API call failed after 5 attempts")
+
+
+# ---------------------------------------------------------------------------
+# Cost helper
+# ---------------------------------------------------------------------------
+
+def _calc_cost(model: str, in_t: int, out_t: int, cw_t: int, cr_t: int) -> float:
+    if model == CLAUDE_MODEL_NVD:
+        return (
+            in_t  / 1e6 * HAIKU_INPUT_COST_PER_MTOK  +
+            cw_t  / 1e6 * HAIKU_CACHE_WRITE_COST_PER_MTOK +
+            cr_t  / 1e6 * HAIKU_CACHE_READ_COST_PER_MTOK  +
+            out_t / 1e6 * HAIKU_OUTPUT_COST_PER_MTOK
+        )
+    return (
+        in_t  / 1e6 * SONNET_INPUT_COST_PER_MTOK  +
+        cw_t  / 1e6 * SONNET_CACHE_WRITE_COST_PER_MTOK +
+        cr_t  / 1e6 * SONNET_CACHE_READ_COST_PER_MTOK  +
+        out_t / 1e6 * SONNET_OUTPUT_COST_PER_MTOK
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -207,10 +252,15 @@ def enrich(source: str, limit: int | None = None, batch_size: int = CLAUDE_BATCH
     existing_ids = _load_existing_ids(out_file)
     client       = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     builder      = PROMPT_BUILDERS[source]
+    model        = CLAUDE_MODEL_NVD if source == "nvd" else CLAUDE_MODEL_COT
 
-    total_saved   = 0
-    total_input_t = 0
-    total_output_t = 0
+    logger.info("Using model %s for source=%s", model, source)
+
+    total_saved        = 0
+    total_input_t      = 0
+    total_output_t     = 0
+    total_cache_write  = 0
+    total_cache_read   = 0
 
     raw_entries: list[dict] = []
     with jsonlines.open(raw_file) as r:
@@ -232,14 +282,18 @@ def enrich(source: str, limit: int | None = None, batch_size: int = CLAUDE_BATCH
             instruction, input_ctx = builder(entry)
 
             try:
-                output_text, in_t, out_t = _call_claude(client, instruction, input_ctx)
+                output_text, in_t, out_t, cw_t, cr_t = _call_claude(
+                    client, model, instruction, input_ctx
+                )
             except Exception as exc:
                 logger.warning("Skipping %s: %s", entry_id, exc)
                 pbar.update(1)
                 continue
 
-            total_input_t  += in_t
-            total_output_t += out_t
+            total_input_t     += in_t
+            total_output_t    += out_t
+            total_cache_write += cw_t
+            total_cache_read  += cr_t
 
             enriched = {
                 **entry,
@@ -259,26 +313,26 @@ def enrich(source: str, limit: int | None = None, batch_size: int = CLAUDE_BATCH
             pbar.update(1)
 
             if total_saved % batch_size == 0:
-                cost = (
-                    total_input_t  / 1_000_000 * CLAUDE_INPUT_COST_PER_MTOK +
-                    total_output_t / 1_000_000 * CLAUDE_OUTPUT_COST_PER_MTOK
-                )
+                cost = _calc_cost(model, total_input_t, total_output_t,
+                                  total_cache_write, total_cache_read)
                 logger.info(
-                    "Batch checkpoint: %d saved | tokens in=%d out=%d | est. cost $%.4f",
-                    total_saved, total_input_t, total_output_t, cost,
+                    "Batch checkpoint: %d saved | tokens in=%d cache_write=%d"
+                    " cache_read=%d out=%d | est. cost $%.4f",
+                    total_saved, total_input_t, total_cache_write,
+                    total_cache_read, total_output_t, cost,
                 )
 
             if limit and total_saved >= limit:
                 logger.info("Reached limit=%d", limit)
                 break
 
-    total_cost = (
-        total_input_t  / 1_000_000 * CLAUDE_INPUT_COST_PER_MTOK +
-        total_output_t / 1_000_000 * CLAUDE_OUTPUT_COST_PER_MTOK
-    )
+    total_cost = _calc_cost(model, total_input_t, total_output_t,
+                            total_cache_write, total_cache_read)
     logger.info(
-        "Done. Saved %d entries → %s | total tokens in=%d out=%d | est. cost $%.4f",
-        total_saved, out_file, total_input_t, total_output_t, total_cost,
+        "Done. Saved %d entries → %s | tokens in=%d cache_write=%d"
+        " cache_read=%d out=%d | est. cost $%.4f",
+        total_saved, out_file, total_input_t, total_cache_write,
+        total_cache_read, total_output_t, total_cost,
     )
 
 
