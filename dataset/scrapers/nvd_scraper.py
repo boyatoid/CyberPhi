@@ -44,6 +44,20 @@ OUTPUT_FILE = RAW_DIR / "nvd_cves.jsonl"
 # Helpers
 # ---------------------------------------------------------------------------
 
+_UUID_RE = __import__("re").compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    __import__("re").IGNORECASE,
+)
+
+
+def _validate_api_key() -> None:
+    if NVD_API_KEY and not _UUID_RE.match(NVD_API_KEY):
+        raise ValueError(
+            f"NVD_API_KEY looks malformed (got {len(NVD_API_KEY)} chars, expected 36). "
+            "Check your .env or environment variable for accidental duplication."
+        )
+
+
 def _sleep_per_request() -> float:
     if NVD_API_KEY:
         return 30.0 / NVD_RATE_LIMIT_WITH_KEY      # ~0.6 s
@@ -178,6 +192,7 @@ def scrape(severities: list[str] = None, limit: int | None = None) -> None:
     if severities is None:
         severities = ["HIGH", "CRITICAL"]
 
+    _validate_api_key()
     existing_ids  = _load_existing_ids()
     sleep_secs    = _sleep_per_request()
     session       = requests.Session()
