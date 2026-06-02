@@ -64,15 +64,19 @@ def _sleep_per_request() -> float:
     return 30.0 / NVD_RATE_LIMIT_WITHOUT_KEY        # 6.0 s
 
 
-def _load_existing_ids() -> set:
+def _load_existing_ids() -> tuple[set, dict[str, int]]:
+    """Return (id_set, per_severity_counts) in a single pass over the output file."""
     if not OUTPUT_FILE.exists():
-        return set()
+        return set(), {}
     ids: set = set()
+    counts: dict[str, int] = {}
     with jsonlines.open(OUTPUT_FILE) as r:
         for entry in r:
             ids.add(entry.get("cve_id", ""))
-    logger.info("Loaded %d existing CVE IDs (resume mode)", len(ids))
-    return ids
+            sev = entry.get("severity", "UNKNOWN").upper()
+            counts[sev] = counts.get(sev, 0) + 1
+    logger.info("Loaded %d existing CVE IDs (resume mode) | per-severity: %s", len(ids), counts)
+    return ids, counts
 
 
 def _fetch_page(session: requests.Session, start_index: int, severity: str) -> dict:
@@ -192,22 +196,52 @@ def scrape(severities: list[str] = None, limit: int | None = None) -> None:
         severities = ["HIGH", "CRITICAL"]
 
     _validate_api_key()
-    existing_ids  = _load_existing_ids()
+    existing_ids, existing_counts = _load_existing_ids()
     sleep_secs    = _sleep_per_request()
     session       = requests.Session()
     total_saved   = 0
 
+    # Per-severity target: split the limit evenly across all requested severities.
+    # Severities that already meet their target are skipped so the run fills gaps.
+    per_sev_target = (limit // len(severities)) if limit else None
+
+    if per_sev_target:
+        logger.info(
+            "Per-severity target: %d (limit=%d across %d severities)",
+            per_sev_target, limit, len(severities),
+        )
+        for sev in severities:
+            have = existing_counts.get(sev, 0)
+            status = "DONE" if have >= per_sev_target else f"need {per_sev_target - have} more"
+            logger.info("  %-10s existing=%-6d target=%-6d  %s", sev, have, per_sev_target, status)
+
     for severity in severities:
-        logger.info("Scraping severity=%s", severity)
+        already = existing_counts.get(severity, 0)
+
+        if per_sev_target and already >= per_sev_target:
+            logger.info(
+                "Skipping severity=%s — already have %d/%d entries",
+                severity, already, per_sev_target,
+            )
+            continue
+
+        sev_need = (per_sev_target - already) if per_sev_target else None
+        logger.info(
+            "Scraping severity=%s — have %d, need %d more",
+            severity, already, sev_need if sev_need else 0,
+        )
+
         data          = _fetch_page(session, 0, severity)
         total_results = data.get("totalResults", 0)
-        logger.info("Total available for %s: %d", severity, total_results)
+        logger.info("Total available for %s on NVD: %d", severity, total_results)
 
-        cap = min(total_results, limit - total_saved if limit else total_results)
+        cap       = min(total_results, sev_need if sev_need else total_results)
+        sev_saved = 0
 
         with tqdm(total=cap, desc=f"NVD {severity}", unit="CVE") as pbar:
-            start_index = 0
-            while True:
+            start_index  = 0
+            sev_complete = False
+            while not sev_complete:
                 vulns = data.get("vulnerabilities", [])
                 if not vulns:
                     break
@@ -220,10 +254,19 @@ def scrape(severities: list[str] = None, limit: int | None = None) -> None:
                         writer.write(entry)
                         existing_ids.add(entry["cve_id"])
                         total_saved += 1
+                        sev_saved   += 1
                         pbar.update(1)
-                        if limit and total_saved >= limit:
-                            logger.info("Reached limit=%d", limit)
-                            return
+                        if sev_need and sev_saved >= sev_need:
+                            logger.info(
+                                "Reached target for %s: %d new + %d existing = %d/%d",
+                                severity, sev_saved, already,
+                                sev_saved + already, per_sev_target,
+                            )
+                            sev_complete = True
+                            break
+
+                if sev_complete:
+                    break
 
                 start_index += len(vulns)
                 if start_index >= total_results:
@@ -232,7 +275,9 @@ def scrape(severities: list[str] = None, limit: int | None = None) -> None:
                 time.sleep(sleep_secs)
                 data = _fetch_page(session, start_index, severity)
 
-    logger.info("Done. Saved %d new CVEs → %s", total_saved, OUTPUT_FILE)
+        logger.info("Finished %s: saved %d new entries this run", severity, sev_saved)
+
+    logger.info("Done. Saved %d new CVEs total → %s", total_saved, OUTPUT_FILE)
 
 
 # ---------------------------------------------------------------------------
