@@ -72,17 +72,27 @@ def _fetch_page(session: requests.Session, start_index: int, severity: str) -> d
     if NVD_API_KEY:
         headers["apiKey"] = NVD_API_KEY
 
-    for attempt in range(6):
+    for attempt in range(8):
         try:
-            resp = session.get(NVD_API_BASE, params=params, headers=headers, timeout=30)
+            resp = session.get(NVD_API_BASE, params=params, headers=headers, timeout=90)
             resp.raise_for_status()
             return resp.json()
+        except requests.exceptions.HTTPError as exc:
+            code = exc.response.status_code
+            # 4xx from NVD (including 404) is a soft throttle/overload signal — wait longer
+            wait = 2 ** attempt * 8 if code >= 500 else 2 ** attempt * 15
+            logger.warning("HTTP %d (attempt %d/8): %s — retry in %ds", code, attempt + 1, exc, wait)
+            time.sleep(wait)
+        except requests.exceptions.Timeout:
+            wait = 2 ** attempt * 5
+            logger.warning("Timeout (attempt %d/8) — retry in %ds", attempt + 1, wait)
+            time.sleep(wait)
         except requests.RequestException as exc:
             wait = 2 ** attempt * 5
-            logger.warning("Page fetch failed (attempt %d/6): %s — retry in %ds", attempt + 1, exc, wait)
+            logger.warning("Request error (attempt %d/8): %s — retry in %ds", attempt + 1, exc, wait)
             time.sleep(wait)
 
-    raise RuntimeError(f"Could not fetch NVD page startIndex={start_index} after 6 attempts")
+    raise RuntimeError(f"Could not fetch NVD page startIndex={start_index} after 8 attempts")
 
 
 def _extract(vuln: dict) -> dict | None:

@@ -57,7 +57,7 @@ LANGUAGES = ["python", "php", "javascript", "c", "cpp", "java", "go", "ruby"]
 # NVD API
 # ---------------------------------------------------------------------------
 NVD_API_BASE               = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-NVD_PAGE_SIZE              = 2000
+NVD_PAGE_SIZE              = 500   # smaller pages reduce NVD 404 throttle risk
 NVD_RATE_LIMIT_WITHOUT_KEY = 5   # requests / 30 s
 NVD_RATE_LIMIT_WITH_KEY    = 50  # requests / 30 s
 
