@@ -69,14 +69,20 @@ def _fetch_page(session: requests.Session, start_index: int, severity: str) -> d
         "cvssV3Severity": severity,
     }
     headers: dict = {
-        "User-Agent": "CyberPhi/1.0 (security dataset builder)",
+        "User-Agent":      "CyberPhi/1.0 (security dataset builder)",
+        "Accept-Encoding": "identity",       # match plain curl — no gzip negotiation
+        "Accept":          "application/json",
     }
     if NVD_API_KEY:
         headers["apiKey"] = NVD_API_KEY
 
     for attempt in range(8):
         try:
-            resp = session.get(NVD_API_BASE, params=params, headers=headers, timeout=90)
+            # prepare_request + send so only our explicit headers are sent (no session defaults)
+            req      = requests.Request("GET", NVD_API_BASE, params=params, headers=headers)
+            prepared = session.prepare_request(req)
+            logger.debug("GET %s", prepared.url)
+            resp = session.send(prepared, timeout=90)
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.HTTPError as exc:
