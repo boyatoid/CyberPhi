@@ -68,7 +68,9 @@ def _fetch_page(session: requests.Session, start_index: int, severity: str) -> d
         "startIndex":     start_index,
         "cvssV3Severity": severity,
     }
-    headers: dict = {}
+    headers: dict = {
+        "User-Agent": "CyberPhi/1.0 (security dataset builder)",
+    }
     if NVD_API_KEY:
         headers["apiKey"] = NVD_API_KEY
 
@@ -79,9 +81,12 @@ def _fetch_page(session: requests.Session, start_index: int, severity: str) -> d
             return resp.json()
         except requests.exceptions.HTTPError as exc:
             code = exc.response.status_code
-            # 4xx from NVD (including 404) is a soft throttle/overload signal — wait longer
+            body = exc.response.text[:300].strip()
             wait = 2 ** attempt * 8 if code >= 500 else 2 ** attempt * 15
-            logger.warning("HTTP %d (attempt %d/8): %s — retry in %ds", code, attempt + 1, exc, wait)
+            logger.warning(
+                "HTTP %d (attempt %d/8) — retry in %ds | body: %s",
+                code, attempt + 1, wait, body,
+            )
             time.sleep(wait)
         except requests.exceptions.Timeout:
             wait = 2 ** attempt * 5
