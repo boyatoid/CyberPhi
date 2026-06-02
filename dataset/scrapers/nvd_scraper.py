@@ -79,21 +79,31 @@ def _fetch_page(session: requests.Session, start_index: int, severity: str) -> d
 
     for attempt in range(8):
         try:
-            # prepare_request + send so only our explicit headers are sent (no session defaults)
             req      = requests.Request("GET", NVD_API_BASE, params=params, headers=headers)
             prepared = session.prepare_request(req)
-            logger.debug("GET %s", prepared.url)
+
+            # Mask API key in log but keep everything else visible
+            safe_url = prepared.url.replace(NVD_API_KEY, "***") if NVD_API_KEY else prepared.url
+            logger.debug("REQUEST  url:     %s", safe_url)
+            logger.debug("REQUEST  headers: %s", dict(prepared.headers))
+
             resp = session.send(prepared, timeout=90)
+
+            logger.debug("RESPONSE status:  %d", resp.status_code)
+            logger.debug("RESPONSE headers: %s", dict(resp.headers))
+            logger.debug("RESPONSE body:    %s", resp.content[:500])
+
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.HTTPError as exc:
-            code = exc.response.status_code
-            body = exc.response.text[:300].strip()
+            r    = exc.response
+            code = r.status_code
             wait = 2 ** attempt * 8 if code >= 500 else 2 ** attempt * 15
-            logger.warning(
-                "HTTP %d (attempt %d/8) — retry in %ds | body: %s",
-                code, attempt + 1, wait, body,
-            )
+            logger.warning("HTTP %d (attempt %d/8) — retry in %ds", code, attempt + 1, wait)
+            logger.warning("  url:             %s", r.url)
+            logger.warning("  response headers:%s", dict(r.headers))
+            logger.warning("  raw body bytes:  %s", r.content[:500])
+            logger.warning("  decoded text:    %s", r.content.decode("utf-8", errors="replace")[:300])
             time.sleep(wait)
         except requests.exceptions.Timeout:
             wait = 2 ** attempt * 5
