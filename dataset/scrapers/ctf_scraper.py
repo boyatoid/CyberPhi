@@ -263,8 +263,8 @@ def scrape(limit: int | None = None, years: list[int] | None = None) -> None:
                     "ctftime_writeup": f"https://ctftime.org/writeup/{row['writeup_id']}",
                 }
 
-                with jsonlines.open(OUTPUT_FILE, mode="a") as writer:
-                    writer.write(entry)
+                with open(OUTPUT_FILE, mode="a", encoding="utf-8") as f:
+                    jsonlines.Writer(f).write(entry)
 
                 existing_urls.add(ext_url)
                 total_saved += 1
@@ -284,8 +284,8 @@ def _load_existing_urls() -> tuple[set, int]:
     if not OUTPUT_FILE.exists():
         return set(), 0
     urls: set = set()
-    with jsonlines.open(OUTPUT_FILE) as r:
-        for entry in r:
+    with open(OUTPUT_FILE, encoding="utf-8", errors="replace") as f:
+        for entry in jsonlines.Reader(f):
             urls.add(entry.get("url", ""))
     logger.info("Loaded %d existing URLs (resume mode)", len(urls))
     return urls, len(urls)
