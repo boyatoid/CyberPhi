@@ -285,7 +285,7 @@ def _load_existing_urls() -> tuple[set, int]:
         return set(), 0
     urls: set = set()
     with open(OUTPUT_FILE, encoding="utf-8", errors="replace") as f:
-        for entry in jsonlines.Reader(f):
+        for entry in jsonlines.Reader(f).iter(skip_invalid=True):
             urls.add(entry.get("url", ""))
     logger.info("Loaded %d existing URLs (resume mode)", len(urls))
     return urls, len(urls)
