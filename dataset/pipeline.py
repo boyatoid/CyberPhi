@@ -111,7 +111,12 @@ def run_scrape(args) -> None:
 
 def run_enrich(args) -> None:
     etype   = getattr(args, "type", "all")
-    sources = ["nvd", "exploitdb", "ctf", "hackerone"]
+    src_arg = getattr(args, "source", "all")
+    sources = (
+        ["nvd", "exploitdb", "ctf", "hackerone"]
+        if src_arg == "all"
+        else [src_arg]
+    )
     limit   = getattr(args, "limit", None)
 
     if etype in ("cot", "all"):

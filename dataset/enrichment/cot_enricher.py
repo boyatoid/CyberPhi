@@ -248,8 +248,8 @@ def enrich(source: str, limit: int | None = None, batch_size: int = CLAUDE_BATCH
         logger.error("Raw file not found: %s — run the scraper first", raw_file)
         return
 
-    out_file     = ENRICHED_DIR / f"{source}_enriched.jsonl"
-    existing_ids = _load_existing_ids(out_file)
+    out_file                = ENRICHED_DIR / f"{source}_enriched.jsonl"
+    existing_ids, existing_count = _load_existing_ids(out_file)
     client       = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     builder      = PROMPT_BUILDERS[source]
     model        = CLAUDE_MODEL_NVD if source == "nvd" else CLAUDE_MODEL_COT
@@ -267,16 +267,24 @@ def enrich(source: str, limit: int | None = None, batch_size: int = CLAUDE_BATCH
         for entry in r:
             raw_entries.append(entry)
 
-    logger.info("Enriching %d raw entries from source=%s", len(raw_entries), source)
+    total_raw = len(raw_entries)
+    remaining = min(limit, total_raw - existing_count) if limit else (total_raw - existing_count)
 
-    with tqdm(total=min(len(raw_entries), limit or len(raw_entries)),
-              desc=f"Enrich {source}", unit="entry") as pbar:
+    logger.info(
+        "source=%s: have %d/%d enriched, need %d more",
+        source, existing_count, total_raw, max(remaining, 0),
+    )
+
+    if remaining <= 0:
+        logger.info("source=%s already fully enriched — skipping", source)
+        return
+
+    with tqdm(total=remaining, desc=f"Enrich {source}", unit="entry") as pbar:
         for entry in raw_entries:
             sid = _source_id(source, entry)
             entry_id = f"{source}_{sid}"
 
             if entry_id in existing_ids:
-                pbar.update(1)
                 continue
 
             instruction, input_ctx = builder(entry)
@@ -336,15 +344,16 @@ def enrich(source: str, limit: int | None = None, batch_size: int = CLAUDE_BATCH
     )
 
 
-def _load_existing_ids(out_file: Path) -> set:
+def _load_existing_ids(out_file: Path) -> tuple[set, int]:
     if not out_file.exists():
-        return set()
+        return set(), 0
     ids: set = set()
     with jsonlines.open(out_file) as r:
         for entry in r:
             ids.add(entry.get("entry_id", ""))
-    logger.info("Loaded %d existing enriched IDs from %s", len(ids), out_file.name)
-    return ids
+    count = len(ids)
+    logger.info("Loaded %d existing enriched IDs from %s (resume mode)", count, out_file.name)
+    return ids, count
 
 
 # ---------------------------------------------------------------------------
