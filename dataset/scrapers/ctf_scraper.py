@@ -125,6 +125,8 @@ def _get_external_link(writeup_id: str, session: requests.Session) -> tuple[str,
                 if c in text:
                     cat = c
                     break
+            if cat != "misc":
+                break
         return ext_url, cat
     except Exception as exc:
         logger.debug("Failed to get external link for writeup %s: %s", writeup_id, exc)
@@ -222,11 +224,10 @@ def scrape(limit: int | None = None, years: list[int] | None = None) -> None:
     remaining   = (limit - existing_count) if limit else None
     logger.info("CTF writeups: have %d, need %d more", existing_count, remaining or 0)
 
-    session     = requests.Session()
     total_saved = 0
     page        = 1
 
-    with tqdm(desc="CTF writeups", unit="writeup") as pbar:
+    with requests.Session() as session, tqdm(desc="CTF writeups", unit="writeup") as pbar:
         while True:
             time.sleep(CTF_SCRAPE_DELAY)
             rows = _list_ctftime_writeups(page, session)
@@ -286,7 +287,9 @@ def _load_existing_urls() -> tuple[set, int]:
     urls: set = set()
     with open(OUTPUT_FILE, encoding="utf-8", errors="replace") as f:
         for entry in jsonlines.Reader(f).iter(skip_invalid=True):
-            urls.add(entry.get("url", ""))
+            url = entry.get("url")
+            if url:
+                urls.add(url)
     logger.info("Loaded %d existing URLs (resume mode)", len(urls))
     return urls, len(urls)
 

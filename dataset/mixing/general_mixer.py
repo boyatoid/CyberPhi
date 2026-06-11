@@ -65,8 +65,19 @@ def _convert_ultrachat(row: dict) -> dict | None:
     messages = row.get("messages", [])
     if len(messages) < 2:
         return None
-    instruction = messages[0].get("content", "") if messages[0].get("role") == "user" else ""
-    output      = messages[1].get("content", "") if messages[1].get("role") == "assistant" else ""
+    # Find the first user message and the first assistant reply after it
+    # (conversations may open with a system message).
+    instruction = ""
+    output      = ""
+    for msg in messages:
+        role    = msg.get("role")
+        content = msg.get("content", "")
+        if not instruction:
+            if role == "user":
+                instruction = content
+        elif role == "assistant":
+            output = content
+            break
     if not instruction or not output:
         return None
     return {

@@ -84,6 +84,10 @@ def _validate_entry(entry: dict, strict: bool = False) -> list[str]:
         errors.append(f"invalid severity: {entry.get('severity')!r}")
     if entry.get("difficulty") not in VALID_DIFFICULTIES:
         errors.append(f"invalid difficulty: {entry.get('difficulty')!r}")
+    if entry.get("vuln_type") not in VALID_VULN_TYPES:
+        errors.append(f"invalid vuln_type: {entry.get('vuln_type')!r}")
+    if entry.get("language") not in VALID_LANGUAGES:
+        errors.append(f"invalid language: {entry.get('language')!r}")
 
     output      = entry.get("output", "")
     instruction = entry.get("instruction", "")

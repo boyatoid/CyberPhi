@@ -74,11 +74,17 @@ _FLAG_RE = re.compile(r"(?:flag|ctf|htb|picoctf|pico)\{[^}]+\}", re.IGNORECASE)
 
 
 def flag_extraction_accuracy(outputs: list[str], expected_flags: list[str]) -> float:
-    """Fraction of outputs that contain the expected CTF flag."""
+    """Fraction of outputs that contain the expected CTF flag.
+
+    Pairs with an empty expected flag are excluded from the denominator —
+    they can never be scored correct, so counting them would deflate accuracy.
+    """
     correct = 0
+    scored  = 0
     for out, expected in zip(outputs, expected_flags):
         if not expected:
             continue
+        scored += 1
         if expected.lower() in out.lower():
             correct += 1
             continue
@@ -87,19 +93,26 @@ def flag_extraction_accuracy(outputs: list[str], expected_flags: list[str]) -> f
             if match.lower() == expected.lower():
                 correct += 1
                 break
-    return correct / max(len(outputs), 1)
+    return correct / max(scored, 1)
 
 
 def vuln_class_accuracy(outputs: list[str], expected_classes: list[str]) -> float:
     """
     Fraction of outputs that correctly identify the vulnerability class.
     Checks for class name in output text (case-insensitive).
+
+    Pairs with an empty/unknown class are excluded — an empty string is a
+    substring of everything and would count as a free correct answer.
     """
     correct = 0
+    scored  = 0
     for out, cls in zip(outputs, expected_classes):
+        if not cls or cls == "unknown":
+            continue
+        scored += 1
         if cls.lower() in out.lower():
             correct += 1
-    return correct / max(len(outputs), 1)
+    return correct / max(scored, 1)
 
 
 def think_block_presence_rate(outputs: list[str]) -> float:
@@ -137,6 +150,11 @@ def print_report(results_file: Path) -> None:
     """Load a results JSON and print a formatted evaluation report."""
     with open(results_file) as f:
         results = json.load(f)
+
+    # run_benchmarks.py writes {"benchmark": ..., "raw": [...]}; also accept
+    # a bare list of {output, expected, ...} entries.
+    if isinstance(results, dict):
+        results = results.get("raw", [])
 
     outputs  = [r.get("output", "") for r in results]
     expected = [r.get("expected", "") for r in results]

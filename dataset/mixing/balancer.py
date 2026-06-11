@@ -93,7 +93,7 @@ def balance(
                 _ascii_table(lang_counts, total, "Languages"))
 
     # --- Downsample over-represented types ---
-    max_entries_per_type = int(total * max_fraction)
+    max_entries_per_type = max(1, int(total * max_fraction))
     by_type: dict[str, list[dict]] = {}
     for entry in entries:
         vt = entry.get("vuln_type", "unknown")

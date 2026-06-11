@@ -120,9 +120,10 @@ def detect_vuln_type(text: str) -> str:
 
 
 def detect_language(text: str) -> str:
+    lower = text.lower()
     scores: dict[str, int] = {}
     for lang, keywords in LANG_KEYWORDS.items():
-        hits = sum(1 for kw in keywords if kw in text)
+        hits = sum(1 for kw in keywords if kw in lower)
         if hits:
             scores[lang] = hits
     if not scores:

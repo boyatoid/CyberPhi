@@ -171,11 +171,10 @@ def scrape(limit: int | None = None) -> None:
     remaining   = (limit - existing_count) if limit else None
     logger.info("HackerOne: have %d, need %d more", existing_count, remaining or 0)
 
-    session     = requests.Session()
     cursor      = None
     total_saved = 0
 
-    with tqdm(desc="HackerOne reports", unit="report") as pbar:
+    with requests.Session() as session, tqdm(desc="HackerOne reports", unit="report") as pbar:
         while True:
             time.sleep(H1_SCRAPE_DELAY)
 

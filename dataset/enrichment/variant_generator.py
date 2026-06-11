@@ -124,6 +124,8 @@ def _call_claude(client: anthropic.Anthropic, prompt: str) -> tuple[str, int, in
                 }],
                 messages=[{"role": "user", "content": prompt}],
             )
+            if not response.content:
+                raise ValueError("Empty response content from Claude")
             cache_write = getattr(response.usage, "cache_creation_input_tokens", 0)
             cache_read  = getattr(response.usage, "cache_read_input_tokens",      0)
             return (
@@ -143,7 +145,9 @@ def _call_claude(client: anthropic.Anthropic, prompt: str) -> tuple[str, int, in
             time.sleep(wait)
         except anthropic.APIStatusError as exc:
             if exc.status_code >= 500:
-                time.sleep(2 ** attempt * 8)
+                wait = 2 ** attempt * 8
+                logger.warning("Server error %s. Waiting %ds", exc.status_code, wait)
+                time.sleep(wait)
             else:
                 raise
     raise RuntimeError("Claude call failed after 5 attempts")
@@ -155,7 +159,9 @@ def _load_existing_parent_variant_ids() -> set:
     ids: set = set()
     with jsonlines.open(OUTPUT_FILE) as r:
         for entry in r:
-            ids.add(entry.get("variant_id", ""))
+            vid = entry.get("variant_id")
+            if vid:
+                ids.add(vid)
     logger.info("Loaded %d existing variant IDs", len(ids))
     return ids
 

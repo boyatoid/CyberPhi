@@ -77,7 +77,7 @@ SOURCE_RAW_FILES = {
 
 def _build_nvd_prompt(entry: dict) -> tuple[str, str]:
     instruction = (
-        f"Analyze CVE {entry['cve_id']} "
+        f"Analyze CVE {entry.get('cve_id', 'UNKNOWN')} "
         f"(CVSS {entry.get('cvss_score', '?')} / {entry.get('severity', '?')}). "
         "Provide a step-by-step security analysis covering: vulnerability class, "
         "root cause, exploitation path, real-world impact, and remediation."
@@ -93,7 +93,7 @@ def _build_exploitdb_prompt(entry: dict) -> tuple[str, str]:
         "Identify the vulnerability, explain the exploit technique, trace the execution "
         "flow, assess impact, and describe the patch."
     )
-    input_ctx = entry.get("code", "")[:3000]   # Truncate very long exploit files
+    input_ctx = (entry.get("code") or "")[:3000]   # Truncate very long exploit files
     return instruction, input_ctx
 
 
@@ -103,7 +103,7 @@ def _build_ctf_prompt(entry: dict) -> tuple[str, str]:
         f"(category: {entry.get('category', '?')}). "
         "Explain your approach, tools, exploit steps, and what the flag demonstrates."
     )
-    input_ctx = entry.get("raw_content", "")[:3000]
+    input_ctx = (entry.get("raw_content") or "")[:3000]
     return instruction, input_ctx
 
 
@@ -115,7 +115,7 @@ def _build_hackerone_prompt(entry: dict) -> tuple[str, str]:
         "Explain the vulnerability, reproduction steps, business impact, "
         "and recommended fix."
     )
-    input_ctx = entry.get("summary", "")[:3000]
+    input_ctx = (entry.get("summary") or "")[:3000]
     return instruction, input_ctx
 
 
@@ -176,6 +176,8 @@ def _call_claude(
                 }],
                 messages=[{"role": "user", "content": user_msg}],
             )
+            if not response.content:
+                raise ValueError("Empty response content from Claude")
             cache_write = getattr(response.usage, "cache_creation_input_tokens", 0)
             cache_read  = getattr(response.usage, "cache_read_input_tokens",      0)
             return (
@@ -287,9 +289,8 @@ def enrich(source: str, limit: int | None = None, batch_size: int = CLAUDE_BATCH
             if entry_id in existing_ids:
                 continue
 
-            instruction, input_ctx = builder(entry)
-
             try:
+                instruction, input_ctx = builder(entry)
                 output_text, in_t, out_t, cw_t, cr_t = _call_claude(
                     client, model, instruction, input_ctx
                 )
@@ -350,7 +351,9 @@ def _load_existing_ids(out_file: Path) -> tuple[set, int]:
     ids: set = set()
     with jsonlines.open(out_file) as r:
         for entry in r:
-            ids.add(entry.get("entry_id", ""))
+            eid = entry.get("entry_id")
+            if eid:
+                ids.add(eid)
     count = len(ids)
     logger.info("Loaded %d existing enriched IDs from %s (resume mode)", count, out_file.name)
     return ids, count

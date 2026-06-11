@@ -198,7 +198,6 @@ def scrape(severities: list[str] = None, limit: int | None = None) -> None:
     _validate_api_key()
     existing_ids, existing_counts = _load_existing_ids()
     sleep_secs    = _sleep_per_request()
-    session       = requests.Session()
     total_saved   = 0
 
     # Per-severity target: split the limit evenly across all requested severities.
@@ -215,67 +214,68 @@ def scrape(severities: list[str] = None, limit: int | None = None) -> None:
             status = "DONE" if have >= per_sev_target else f"need {per_sev_target - have} more"
             logger.info("  %-10s existing=%-6d target=%-6d  %s", sev, have, per_sev_target, status)
 
-    for severity in severities:
-        already = existing_counts.get(severity, 0)
+    with requests.Session() as session:
+        for severity in severities:
+            already = existing_counts.get(severity, 0)
 
-        if per_sev_target and already >= per_sev_target:
+            if per_sev_target and already >= per_sev_target:
+                logger.info(
+                    "Skipping severity=%s — already have %d/%d entries",
+                    severity, already, per_sev_target,
+                )
+                continue
+
+            sev_need = (per_sev_target - already) if per_sev_target else None
             logger.info(
-                "Skipping severity=%s — already have %d/%d entries",
-                severity, already, per_sev_target,
+                "Scraping severity=%s — have %d, need %d more",
+                severity, already, sev_need if sev_need else 0,
             )
-            continue
 
-        sev_need = (per_sev_target - already) if per_sev_target else None
-        logger.info(
-            "Scraping severity=%s — have %d, need %d more",
-            severity, already, sev_need if sev_need else 0,
-        )
+            data          = _fetch_page(session, 0, severity)
+            total_results = data.get("totalResults", 0)
+            logger.info("Total available for %s on NVD: %d", severity, total_results)
 
-        data          = _fetch_page(session, 0, severity)
-        total_results = data.get("totalResults", 0)
-        logger.info("Total available for %s on NVD: %d", severity, total_results)
+            cap       = min(total_results, sev_need if sev_need else total_results)
+            sev_saved = 0
 
-        cap       = min(total_results, sev_need if sev_need else total_results)
-        sev_saved = 0
+            with tqdm(total=cap, desc=f"NVD {severity}", unit="CVE") as pbar:
+                start_index  = 0
+                sev_complete = False
+                while not sev_complete:
+                    vulns = data.get("vulnerabilities", [])
+                    if not vulns:
+                        break
 
-        with tqdm(total=cap, desc=f"NVD {severity}", unit="CVE") as pbar:
-            start_index  = 0
-            sev_complete = False
-            while not sev_complete:
-                vulns = data.get("vulnerabilities", [])
-                if not vulns:
-                    break
+                    with jsonlines.open(OUTPUT_FILE, mode="a") as writer:
+                        for vuln in vulns:
+                            entry = _extract(vuln)
+                            if entry is None or entry["cve_id"] in existing_ids:
+                                continue
+                            writer.write(entry)
+                            existing_ids.add(entry["cve_id"])
+                            total_saved += 1
+                            sev_saved   += 1
+                            pbar.update(1)
+                            if sev_need and sev_saved >= sev_need:
+                                logger.info(
+                                    "Reached target for %s: %d new + %d existing = %d/%d",
+                                    severity, sev_saved, already,
+                                    sev_saved + already, per_sev_target,
+                                )
+                                sev_complete = True
+                                break
 
-                with jsonlines.open(OUTPUT_FILE, mode="a") as writer:
-                    for vuln in vulns:
-                        entry = _extract(vuln)
-                        if entry is None or entry["cve_id"] in existing_ids:
-                            continue
-                        writer.write(entry)
-                        existing_ids.add(entry["cve_id"])
-                        total_saved += 1
-                        sev_saved   += 1
-                        pbar.update(1)
-                        if sev_need and sev_saved >= sev_need:
-                            logger.info(
-                                "Reached target for %s: %d new + %d existing = %d/%d",
-                                severity, sev_saved, already,
-                                sev_saved + already, per_sev_target,
-                            )
-                            sev_complete = True
-                            break
+                    if sev_complete:
+                        break
 
-                if sev_complete:
-                    break
+                    start_index += len(vulns)
+                    if start_index >= total_results:
+                        break
 
-                start_index += len(vulns)
-                if start_index >= total_results:
-                    break
+                    time.sleep(sleep_secs)
+                    data = _fetch_page(session, start_index, severity)
 
-                time.sleep(sleep_secs)
-                data = _fetch_page(session, start_index, severity)
-
-        logger.info("Finished %s: saved %d new entries this run", severity, sev_saved)
+            logger.info("Finished %s: saved %d new entries this run", severity, sev_saved)
 
     logger.info("Done. Saved %d new CVEs total → %s", total_saved, OUTPUT_FILE)
 

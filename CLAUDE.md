@@ -23,6 +23,22 @@ python dataset/validation/sample_reviewer.py --vuln-type sqli
 
 # Install dependencies
 pip install -r requirements.txt
+
+# End-to-end (data pipeline + training; requires CUDA GPU for training)
+./quickstart.sh --limit 200
+./quickstart.sh --skip-data --run-name exp_lr2e4   # train only, named run → outputs/exp_lr2e4/
+
+# Training (thin wrapper around Axolotl)
+python training/train.py                      # = axolotl train training/axolotl_config.yaml
+python training/train.py --merge-and-export   # post-training only: merge LoRA + export GGUF (does NOT retrain)
+
+# Evaluation (requires Ollama running the exported model)
+python evaluation/benchmarks/run_benchmarks.py --model cyberphi --all
+python evaluation/benchmarks/run_benchmarks.py --benchmark securityeval --limit 20
+python evaluation/metrics.py --results outputs/eval_results_cwe-qa.json
+
+# Inference
+python inference/thinking_loop.py --query "How does CVE-2023-44487 work?" [--use-rag]
 ```
 
 ## Architecture
@@ -76,10 +92,24 @@ All entries in `data/final/` conform to:
 
 `cot_enricher.py`, `variant_generator.py`, and `qa_generator.py` all call `claude-opus-4-5`. Each has retry logic with exponential backoff for `RateLimitError`, `APIConnectionError`, and 5xx `APIStatusError`. Cost is logged per batch using `response.usage.input_tokens` / `output_tokens`.
 
-## What is and isn't implemented
+## Training (`training/`)
 
-- `dataset/` — **fully implemented**, all scripts runnable
-- `training/`, `inference/`, `evaluation/` — **scaffold only**; functions raise `NotImplementedError` with TODO comments explaining what to build
+All QLoRA hyperparameters live in `training/axolotl_config.yaml` (Phi-3.5-mini base, ChatML template, 4-bit NF4). `train.py` is a thin subprocess wrapper around the Axolotl CLI:
+- No flags → runs training. `--merge-and-export` → merge-only post-training step (merges the LoRA adapter, converts to GGUF via llama.cpp's `convert_hf_to_gguf.py`, writes an Ollama Modelfile). The convert script only supports `f32/f16/bf16/q8_0`; we export `q8_0` — K-quants like q4_k_m need a separate `llama-quantize` pass.
+- The `OUTPUT_DIR` env var overrides the output path for both training and merge; `quickstart.sh` uses it for per-run directories (`outputs/<run-name>/`).
+
+## Evaluation (`evaluation/`)
+
+`benchmarks/run_benchmarks.py` runs three benchmarks against an Ollama model and writes `outputs/eval_results_{benchmark}.json` as `{"benchmark", "model", …, "raw": [...]}`:
+- `ctf-held-out` — last 10% of CTF entries by id, scored on flag extraction via the 3-step thinking loop
+- `securityeval` — downloads `s2e-lab/SecurityEval` `dataset.jsonl` (cached at `data/external/securityeval.jsonl`; JSONL with `ID`/`Prompt` keys, expected CWE parsed from the ID). A task **passes when bandit does NOT find the task's CWE** in the generated code; empty generations fail.
+- `cwe-qa` — first 10% (≤200) of NVD/HackerOne entries, scored with ROUGE-L
+
+`metrics.py` holds the scoring functions and accepts either a bare list or the benchmark dict format via `--results`. Accuracy metrics exclude pairs with an empty reference (empty expected flag / empty or `unknown` vuln class) from the denominator.
+
+## Inference (`inference/`)
+
+`ollama_client.py` (REST wrapper for generate/embed, Ollama must be running), `thinking_loop.py` (think → reflect → answer loop used by the CTF benchmark), `rag/` (ChromaDB vector store + retriever, imported lazily).
 
 ## Environment variables
 

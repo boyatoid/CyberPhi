@@ -70,6 +70,9 @@ OUTPUT_DIR  = Path(os.environ.get("OUTPUT_DIR", "outputs/cyberphi-lora"))
 def run_training() -> None:
     """Launch Axolotl training via subprocess."""
     cmd = ["axolotl", "train", str(CONFIG_YAML)]
+    if "OUTPUT_DIR" in os.environ:
+        # Override the yaml's output_dir so training and merge use the same path
+        cmd += ["--output_dir", str(OUTPUT_DIR)]
     print(f"Running: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 
@@ -136,11 +139,13 @@ def merge_and_export(llama_cpp_dir: Optional[str] = None) -> None:
     merged_dir = OUTPUT_DIR / "merged"
     gguf_out   = OUTPUT_DIR / "cyberphi.gguf"
     convert_script = _find_convert_script(llama_cpp_dir)
+    # convert_hf_to_gguf.py only supports f32/f16/bf16/q8_0; K-quants like
+    # q4_k_m require a separate llama-quantize pass on the q8_0/f16 GGUF.
     convert_cmd = [
         sys.executable, str(convert_script),
         str(merged_dir),
         "--outfile", str(gguf_out),
-        "--outtype", "q4_k_m",
+        "--outtype", "q8_0",
     ]
     print(f"Converting to GGUF: {' '.join(str(c) for c in convert_cmd)}")
     subprocess.run(convert_cmd, check=True)
@@ -159,9 +164,12 @@ def main() -> None:
                         help="Path to llama.cpp directory containing convert_hf_to_gguf.py")
     args = parser.parse_args()
 
-    run_training()
+    # --merge-and-export is a post-training step (quickstart.sh invokes it
+    # after `axolotl train` has already run) — don't retrain.
     if args.merge_and_export:
         merge_and_export(args.llama_cpp_dir)
+    else:
+        run_training()
 
 
 if __name__ == "__main__":
